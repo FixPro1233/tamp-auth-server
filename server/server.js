@@ -1,578 +1,430 @@
-// ==UserScript==
-// @name         Tamp. Cloud Loader v4.0
-// @namespace    http://tampermonkey.net/
-// @version      4.0.0
-// @description  Secure cloud activation for Tamp. by FixPro
-// @author       FixPro
-// @match        https://dynast.io/*
-// @grant        GM_xmlhttpRequest
-// @grant        GM_setValue
-// @grant        GM_getValue
-// @connect      localhost:3000
-// @connect      *.onrender.com
-// @run-at       document-start
-// ==/UserScript==
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const { v4: uuidv4 } = require('uuid');
+const fs = require('fs');
+const path = require('path');
 
-(function() {
-    'use strict';
+const app = express();
 
-    if (window.__tamp_cloud_loader_v4) return;
-    window.__tamp_cloud_loader_v4 = true;
+// Middleware
+app.use(helmet());
+app.use(cors());
+app.use(express.json());
 
-    // 🔧 КОНФИГУРАЦИЯ - ЗАМЕНИТЕ НА ВАШ СЕРВЕР ПОСЛЕ ДЕПЛОЯ
-    const API_BASE = 'http://localhost:3000/api'; // Для тестов локально
-    // const API_BASE = 'https://your-app.onrender.com/api'; // После деплоя
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100
+});
+app.use(limiter);
 
-    let userHWID = GM_getValue('tamp_hwid', null);
-    let userData = GM_getValue('tamp_user_data', null);
-    let serverOnline = false;
+// Environment variables
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://fixpro648_db_user:fixpropisungg1952@fixpro648_db_user.c6acd5e.mongodb.net/loader?retryWrites=true&w=majority&appName=fixpro648_db_user';
+const JWT_SECRET = process.env.JWT_SECRET || 'fixpropisungg1952_super_secret_key_2024_loader_app_security';
+const PORT = process.env.PORT || 3000;
 
-    // 🆔 ГЕНЕРАЦИЯ HWID
-    function generateHWID() {
-        const components = [
-            navigator.userAgent,
-            navigator.platform,
-            navigator.hardwareConcurrency || 'unknown',
-            screen.width + 'x' + screen.height,
-            Intl.DateTimeFormat().resolvedOptions().timeZone,
-            navigator.language,
-            (navigator.deviceMemory || 'unknown') + 'GB'
-        ];
-        
-        let hash = 0;
-        const str = components.join('|');
-        for (let i = 0; i < str.length; i++) {
-            const char = str.charCodeAt(i);
-            hash = ((hash << 5) - hash) + char;
-            hash = hash & hash;
+// MongoDB connection
+mongoose.connect(MONGODB_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+})
+.then(() => console.log('✅ MongoDB connected successfully'))
+.catch(err => console.error('❌ MongoDB connection error:', err));
+
+// MongoDB Schemas
+const userSchema = new mongoose.Schema({
+  hwid: { type: String, required: true, unique: true },
+  nickname: { type: String, required: true },
+  key: { type: String, required: true },
+  role: { type: String, required: true, enum: ['premium', 'beta', 'coder', 'friend', 'trial'] },
+  activatedAt: { type: Date, default: Date.now },
+  lastSeen: { type: Date, default: Date.now },
+  totalUsage: { type: Number, default: 0 },
+  isActive: { type: Boolean, default: true },
+  ip: String,
+  userAgent: String
+});
+
+const keySchema = new mongoose.Schema({
+  key: { type: String, required: true, unique: true },
+  type: { type: String, required: true, enum: ['premium', 'beta', 'coder', 'friend', 'trial'] },
+  usesLeft: { type: Number, default: 1 },
+  maxUses: { type: Number, default: 1 },
+  createdBy: { type: String, default: 'system' },
+  createdAt: { type: Date, default: Date.now },
+  isActive: { type: Boolean, default: true },
+  note: String
+});
+
+const activationSchema = new mongoose.Schema({
+  hwid: String,
+  key: String,
+  nickname: String,
+  role: String,
+  ip: String,
+  userAgent: String,
+  timestamp: { type: Date, default: Date.now }
+});
+
+const User = mongoose.model('User', userSchema);
+const Key = mongoose.model('Key', keySchema);
+const Activation = mongoose.model('Activation', activationSchema);
+
+// Pre-defined keys
+const PREDEFINED_KEYS = {
+  'premium': [
+    'PREMIUM-7X9F-2K4L-8M3N', 'PREMIUM-5T8R-1W6Q-9P2O', 'PREMIUM-3V7B-4C9X-6Z1M',
+    'PREMIUM-8N3D-2F7G-1H4J', 'PREMIUM-6K8L-9Q2W-5E3R', 'PREMIUM-4S5D-7F8G-9H0J',
+    'PREMIUM-2K3L-4M5N-6B7V', 'PREMIUM-1Q2W-3E4R-5T6Y', 'PREMIUM-9Z8X-7C6V-5B4N',
+    'PREMIUM-3M2N-1B4V-6C5X', 'PREMIUM-7U8I-9O0P-1K2J', 'PREMIUM-5H6G-7F8D-9S0A',
+    'PREMIUM-2W3E-4R5T-6Y7U', 'PREMIUM-8I9O-0P1K-2J3H', 'PREMIUM-4F5G-6H7J-8K9L',
+    'PREMIUM-1Z2X-3C4V-5B6N', 'PREMIUM-7Q8W-9E0R-1T2Y', 'PREMIUM-3U4I-5O6P-7K8J',
+    'PREMIUM-9L0K-1M2N-3B4V', 'PREMIUM-5S6D-7F8G-9H0J', 'PREMIUM-2E3R-4T5Y-6U7I',
+    'PREMIUM-8O9P-0K1J-2H3G', 'PREMIUM-4M5N-6B7V-8C9X', 'PREMIUM-1W2Q-3E4R-5T6Y',
+    'PREMIUM-7Z8X-9C0V-1B2N', 'PREMIUM-3K4L-5M6N-7B8V', 'PREMIUM-9F0G-1H2J-3K4L',
+    'PREMIUM-5D6S-7A8F-9G0H', 'PREMIUM-2R3T-4Y5U-6I7O', 'PREMIUM-8P9O-0I1U-2Y3T'
+  ],
+  'beta': [
+    'BETA-7X2K-4L8M-3N9P', 'BETA-5T1W-6Q9P-2O3I', 'BETA-3V4C-9X6Z-1M2K',
+    'BETA-8N2F-7G1H-4J5K', 'BETA-6K9Q-2W5E-3R4T', 'BETA-4S7F-8G9H-0J1K',
+    'BETA-2K4M-5N6B-7V8C', 'BETA-1Q3E-4R5T-6Y7U', 'BETA-9Z7C-6V5B-4N3M',
+    'BETA-3M1B-4V6C-5X7Z'
+  ],
+  'coder': [
+    'CODER-F1X-PR0-ULTRA'
+  ],
+  'friend': [
+    'FRIEND-SP3C1AL-4CC3SS', 'FRIEND-V1P-TR34T-M3NT', 'FRIEND-B3ST-BUDD13S'
+  ]
+};
+
+// Initialize predefined keys in database
+async function initializeKeys() {
+  try {
+    let keysAdded = 0;
+    
+    for (const [role, keys] of Object.entries(PREDEFINED_KEYS)) {
+      for (const key of keys) {
+        const existingKey = await Key.findOne({ key });
+        if (!existingKey) {
+          await Key.create({
+            key,
+            type: role,
+            usesLeft: role === 'coder' ? 999 : 1,
+            maxUses: role === 'coder' ? 999 : 1,
+            createdBy: 'system',
+            note: 'Pre-defined key'
+          });
+          keysAdded++;
+          console.log(`✅ Added key: ${key} (${role})`);
         }
-        return 'TAMP_' + Math.abs(hash).toString(36).toUpperCase() + '_' + Date.now().toString(36).slice(-6);
+      }
+    }
+    
+    console.log(`✅ Keys initialization complete. Added ${keysAdded} new keys.`);
+  } catch (error) {
+    console.error('❌ Error initializing keys:', error);
+  }
+}
+
+// Health check endpoint
+app.get('/api/health', async (req, res) => {
+  try {
+    // Check MongoDB
+    await mongoose.connection.db.admin().ping();
+    
+    // Get basic stats
+    const totalUsers = await User.countDocuments({ isActive: true });
+    const totalKeys = await Key.countDocuments({ isActive: true });
+    
+    res.json({
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      database: 'connected',
+      stats: {
+        totalUsers,
+        totalKeys,
+        serverUptime: process.uptime()
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'unhealthy',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Statistics endpoint
+app.get('/api/stats', async (req, res) => {
+  try {
+    const totalUsers = await User.countDocuments({ isActive: true });
+    const totalActivations = await Activation.countDocuments();
+    
+    // Get role distribution
+    const roleStats = {};
+    for (const role of ['premium', 'beta', 'coder', 'friend']) {
+      roleStats[role] = await User.countDocuments({ role, isActive: true });
+    }
+    
+    res.json({
+      totalUsers,
+      totalActivations,
+      roleDistribution: roleStats,
+      serverTime: new Date().toISOString(),
+      uptime: Math.floor(process.uptime())
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Activation endpoint
+app.post('/api/activate', async (req, res) => {
+  const { nickname, key } = req.body;
+  const hwid = req.headers['x-hwid'];
+  const ip = req.ip || req.connection.remoteAddress;
+  const userAgent = req.get('User-Agent');
+
+  if (!nickname || !key || !hwid) {
+    return res.status(400).json({ success: false, message: 'Missing required fields' });
+  }
+
+  try {
+    // Find the key
+    const keyDoc = await Key.findOne({ key: key.toUpperCase(), isActive: true });
+    if (!keyDoc) {
+      return res.json({ success: false, message: '❌ Неверный ключ активации' });
     }
 
-    // 🚀 ОСНОВНАЯ ИНИЦИАЛИЗАЦИЯ
-    async function initialize() {
-        console.log('⚡ Tamp. Cloud Loader v4.0 initializing...');
-        
-        if (!userHWID) {
-            userHWID = generateHWID();
-            GM_setValue('tamp_hwid', userHWID);
-            console.log('🆔 Generated new HWID:', userHWID);
-        }
-
-        // Проверяем статус сервера
-        serverOnline = await checkServerStatus();
-        
-        if (userData && userData.key) {
-            if (serverOnline) {
-                await validateSession();
-            } else {
-                loadFromCache();
-            }
-        } else {
-            showAuthInterface();
-        }
+    if (keyDoc.usesLeft <= 0) {
+      return res.json({ success: false, message: '❌ Этот ключ уже использован' });
     }
 
-    // 🌐 ПРОВЕРКА СЕРВЕРА
-    async function checkServerStatus() {
-        return new Promise((resolve) => {
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: `${API_BASE}/health`,
-                timeout: 5000,
-                onload: function(response) {
-                    if (response.status === 200) {
-                        console.log('✅ Server is online');
-                        resolve(true);
-                    } else {
-                        console.log('❌ Server responded with error:', response.status);
-                        resolve(false);
-                    }
-                },
-                onerror: function() {
-                    console.log('🔴 Server is offline');
-                    resolve(false);
-                },
-                ontimeout: function() {
-                    console.log('⏰ Server timeout');
-                    resolve(false);
-                }
-            });
-        });
+    // Check if HWID already activated
+    const existingUser = await User.findOne({ hwid, isActive: true });
+    if (existingUser) {
+      return res.json({ 
+        success: false, 
+        message: '❌ Это устройство уже активировано',
+        existingRole: existingUser.role
+      });
     }
 
-    // 🔐 ВАЛИДАЦИЯ СЕССИИ
-    async function validateSession() {
-        try {
-            const response = await makeRequest('POST', '/validate', {
-                hwid: userHWID,
-                key: userData.key
-            });
-
-            if (response.valid) {
-                console.log('✅ Session validated for:', userData.nickname);
-                userData.lastValidation = Date.now();
-                GM_setValue('tamp_user_data', userData);
-                loadMainScript();
-            } else {
-                console.log('❌ Session invalid, showing auth');
-                GM_setValue('tamp_user_data', null);
-                userData = null;
-                showAuthInterface();
-            }
-        } catch (error) {
-            console.warn('Session validation failed, using cache');
-            loadFromCache();
-        }
+    // Check if key was already used by someone else (for non-coder keys)
+    if (keyDoc.type !== 'coder') {
+      const keyUsed = await User.findOne({ key: key.toUpperCase() });
+      if (keyUsed && keyUsed.hwid !== hwid) {
+        return res.json({ success: false, message: '❌ Этот ключ уже используется другим пользователем' });
+      }
     }
 
-    // 💾 ЗАГРУЗКА ИЗ КЭША
-    function loadFromCache() {
-        const cached = GM_getValue('tamp_cached_script');
-        if (cached && Date.now() - cached.timestamp < 7 * 24 * 60 * 60 * 1000) {
-            console.log('📦 Loading from cache');
-            executeScript(cached.code);
-            showNotification('⚡ Tamp. loaded from cache (offline mode)');
-        } else {
-            showAuthInterface();
-        }
-    }
-
-    // 🎨 ИНТЕРФЕЙС АВТОРИЗАЦИИ
-    function showAuthInterface() {
-        const overlay = document.createElement('div');
-        overlay.id = 'tamp-auth-overlay';
-        overlay.innerHTML = `
-            <div class="tamp-auth-container">
-                <div class="tamp-auth-header">
-                    <h1>⚡ TAMP.CLOUD</h1>
-                    <p>by FixPro • Secure Activation</p>
-                    <div class="tamp-status ${serverOnline ? 'online' : 'offline'}">
-                        ${serverOnline ? '🟢 СЕРВЕР ONLINE' : '🔴 СЕРВЕР OFFLINE'}
-                    </div>
-                </div>
-                
-                <div class="tamp-auth-form">
-                    <input type="text" id="tamp-nickname" placeholder="Ваш игровой ник" maxlength="20" autocomplete="off">
-                    <input type="text" id="tamp-key" placeholder="Ключ активации (XXXX-XXXX-XXXX)" maxlength="19" autocomplete="off">
-                    <button id="tamp-activate-btn">АКТИВИРОВАТЬ</button>
-                    <div id="tamp-message" class="tamp-message"></div>
-                </div>
-
-                <div class="tamp-auth-info">
-                    <div class="tamp-info-item">🔐 Защищенная облачная активация</div>
-                    <div class="tamp-info-item">⚡ Автоматические обновления</div>
-                    <div class="tamp-info-item">🌐 Работа через защищенный сервер</div>
-                </div>
-
-                <div class="tamp-stats">
-                    <div class="tamp-stat">
-                        <span>HWID:</span>
-                        <span class="tamp-hwid">${userHWID}</span>
-                    </div>
-                </div>
-            </div>
-
-            <style>
-                #tamp-auth-overlay {
-                    position: fixed;
-                    top: 0;
-                    left: 0;
-                    width: 100%;
-                    height: 100%;
-                    background: radial-gradient(circle at center, #0a0a15 0%, #000000 100%);
-                    z-index: 2147483647;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    font-family: 'Inter', 'Segoe UI', Tahoma, sans-serif;
-                    backdrop-filter: blur(5px);
-                }
-
-                .tamp-auth-container {
-                    background: rgba(20, 20, 35, 0.95);
-                    border: 2px solid #8A2BE2;
-                    border-radius: 15px;
-                    padding: 35px;
-                    text-align: center;
-                    backdrop-filter: blur(20px);
-                    box-shadow: 0 0 50px rgba(138, 43, 226, 0.4);
-                    max-width: 400px;
-                    width: 90%;
-                    animation: tampSlideIn 0.5s ease-out;
-                }
-
-                @keyframes tampSlideIn {
-                    from { opacity: 0; transform: translateY(-30px) scale(0.9); }
-                    to { opacity: 1; transform: translateY(0) scale(1); }
-                }
-
-                .tamp-auth-header h1 {
-                    color: #FFD700;
-                    font-size: 2.3em;
-                    margin: 0;
-                    text-shadow: 0 0 20px rgba(255, 215, 0, 0.5);
-                    font-weight: 800;
-                    letter-spacing: 1px;
-                }
-
-                .tamp-auth-header p {
-                    color: #8A2BE2;
-                    margin: 5px 0 15px 0;
-                    font-weight: 600;
-                    font-size: 14px;
-                }
-
-                .tamp-status {
-                    padding: 6px 12px;
-                    border-radius: 20px;
-                    font-size: 11px;
-                    font-weight: 700;
-                    margin: 10px 0;
-                    display: inline-block;
-                }
-
-                .tamp-status.online {
-                    background: rgba(46, 204, 113, 0.2);
-                    color: #2ecc71;
-                    border: 1px solid #2ecc71;
-                }
-
-                .tamp-status.offline {
-                    background: rgba(231, 76, 60, 0.2);
-                    color: #e74c3c;
-                    border: 1px solid #e74c3c;
-                }
-
-                .tamp-auth-form {
-                    margin: 20px 0;
-                }
-
-                .tamp-auth-form input {
-                    width: 100%;
-                    padding: 12px 15px;
-                    margin: 8px 0;
-                    background: rgba(255, 255, 255, 0.1);
-                    border: 2px solid #8A2BE2;
-                    border-radius: 8px;
-                    color: white;
-                    font-size: 14px;
-                    box-sizing: border-box;
-                    transition: all 0.3s ease;
-                    text-align: center;
-                }
-
-                .tamp-auth-form input:focus {
-                    outline: none;
-                    border-color: #FFD700;
-                    box-shadow: 0 0 15px rgba(255, 215, 0, 0.3);
-                    background: rgba(255, 255, 255, 0.15);
-                }
-
-                .tamp-auth-form input::placeholder {
-                    color: #888;
-                }
-
-                #tamp-activate-btn {
-                    width: 100%;
-                    padding: 12px;
-                    margin: 10px 0;
-                    background: linear-gradient(135deg, #8A2BE2, #4B0082);
-                    border: none;
-                    border-radius: 8px;
-                    color: white;
-                    font-weight: 700;
-                    cursor: pointer;
-                    font-size: 14px;
-                    transition: all 0.3s ease;
-                    text-transform: uppercase;
-                    letter-spacing: 1px;
-                }
-
-                #tamp-activate-btn:hover {
-                    transform: translateY(-2px);
-                    box-shadow: 0 5px 20px rgba(138, 43, 226, 0.4);
-                    background: linear-gradient(135deg, #9932CC, #8A2BE2);
-                }
-
-                #tamp-activate-btn:disabled {
-                    opacity: 0.6;
-                    cursor: not-allowed;
-                    transform: none;
-                }
-
-                .tamp-message {
-                    min-height: 20px;
-                    margin: 10px 0;
-                    font-size: 12px;
-                    font-weight: 600;
-                    transition: all 0.3s ease;
-                }
-
-                .tamp-message.error {
-                    color: #FF6B6B;
-                }
-
-                .tamp-message.success {
-                    color: #27ae60;
-                }
-
-                .tamp-auth-info {
-                    margin: 20px 0;
-                    padding: 15px;
-                    background: rgba(138, 43, 226, 0.1);
-                    border-radius: 8px;
-                    border: 1px solid rgba(138, 43, 226, 0.3);
-                }
-
-                .tamp-info-item {
-                    color: #ccc;
-                    margin: 5px 0;
-                    font-size: 11px;
-                }
-
-                .tamp-stats {
-                    margin-top: 15px;
-                    padding-top: 15px;
-                    border-top: 1px solid rgba(138, 43, 226, 0.3);
-                }
-
-                .tamp-stat {
-                    display: flex;
-                    justify-content: space-between;
-                    margin: 5px 0;
-                    font-size: 10px;
-                    color: #666;
-                }
-
-                .tamp-hwid {
-                    color: #8A2BE2;
-                    font-family: monospace;
-                    font-size: 9px;
-                }
-            </style>
-        `;
-
-        document.body.appendChild(overlay);
-        setupAuthHandlers();
-        
-        // Автофокус на поле ника
-        setTimeout(() => {
-            const nicknameInput = document.getElementById('tamp-nickname');
-            if (nicknameInput) nicknameInput.focus();
-        }, 300);
-    }
-
-    // 🎮 НАСТРОЙКА ОБРАБОТЧИКОВ АВТОРИЗАЦИИ
-    function setupAuthHandlers() {
-        const activateBtn = document.getElementById('tamp-activate-btn');
-        const nicknameInput = document.getElementById('tamp-nickname');
-        const keyInput = document.getElementById('tamp-key');
-        const messageEl = document.getElementById('tamp-message');
-
-        // Форматирование ключа в реальном времени
-        keyInput.addEventListener('input', function(e) {
-            let value = e.target.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-            if (value.length > 4) value = value.slice(0,4) + '-' + value.slice(4);
-            if (value.length > 9) value = value.slice(0,9) + '-' + value.slice(9);
-            if (value.length > 14) value = value.slice(0,14) + '-' + value.slice(14);
-            e.target.value = value.slice(0, 19);
-        });
-
-        // Активация по клику
-        activateBtn.addEventListener('click', handleActivation);
-
-        // Активация по Enter
-        const handleKeyPress = (e) => {
-            if (e.key === 'Enter') {
-                handleActivation();
-            }
-        };
-        
-        nicknameInput.addEventListener('keypress', handleKeyPress);
-        keyInput.addEventListener('keypress', handleKeyPress);
-
-        function showMessage(text, type) {
-            messageEl.textContent = text;
-            messageEl.className = `tamp-message ${type}`;
-        }
-
-        async function handleActivation() {
-            const nickname = nicknameInput.value.trim();
-            const key = keyInput.value.trim().replace(/-/g, '');
-
-            // Валидация
-            if (!nickname) {
-                showMessage('Введите ваш игровой ник', 'error');
-                nicknameInput.focus();
-                return;
-            }
-
-            if (!key || key.length !== 16) {
-                showMessage('Введите корректный ключ активации', 'error');
-                keyInput.focus();
-                return;
-            }
-
-            // Блокируем кнопку
-            activateBtn.disabled = true;
-            activateBtn.textContent = 'АКТИВАЦИЯ...';
-            showMessage('Проверка ключа...', '');
-
-            try {
-                await activateUser(nickname, key);
-            } catch (error) {
-                console.error('Activation error:', error);
-                showMessage('❌ Ошибка активации', 'error');
-                activateBtn.disabled = false;
-                activateBtn.textContent = 'АКТИВИРОВАТЬ';
-            }
-        }
-
-        async function activateUser(nickname, key) {
-            const response = await makeRequest('POST', '/activate', {
-                nickname: nickname,
-                key: key
-            });
-
-            if (response.success) {
-                userData = {
-                    nickname: nickname,
-                    key: key,
-                    role: response.role,
-                    hwid: userHWID,
-                    activatedAt: Date.now(),
-                    lastValidation: Date.now()
-                };
-                
-                GM_setValue('tamp_user_data', userData);
-                showMessage('✅ Активация успешна! Загрузка...', 'success');
-                
-                setTimeout(() => {
-                    hideAuthInterface();
-                    loadMainScript();
-                }, 1500);
-                
-            } else {
-                showMessage('❌ ' + response.message, 'error');
-                activateBtn.disabled = false;
-                activateBtn.textContent = 'АКТИВИРОВАТЬ';
-                
-                // Подсвечиваем поле с ошибкой
-                keyInput.style.borderColor = '#FF6B6B';
-                setTimeout(() => {
-                    keyInput.style.borderColor = '#8A2BE2';
-                }, 2000);
-            }
-        }
-    }
-
-    // 🌐 УНИВЕРСАЛЬНЫЙ МЕТОД ЗАПРОСА
-    function makeRequest(method, endpoint, data = null) {
-        return new Promise((resolve, reject) => {
-            const options = {
-                method: method,
-                url: API_BASE + endpoint,
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-HWID': userHWID
-                },
-                timeout: 10000,
-                onload: function(response) {
-                    try {
-                        const data = JSON.parse(response.responseText);
-                        if (response.status === 200) {
-                            resolve(data);
-                        } else {
-                            reject(new Error(data.message || `HTTP ${response.status}`));
-                        }
-                    } catch (e) {
-                        reject(new Error('Invalid server response'));
-                    }
-                },
-                onerror: function(error) {
-                    reject(new Error('Network error'));
-                },
-                ontimeout: function() {
-                    reject(new Error('Request timeout'));
-                }
-            };
-
-            if (data) {
-                options.data = JSON.stringify(data);
-            }
-
-            GM_xmlhttpRequest(options);
-        });
-    }
-
-    // 📥 ЗАГРУЗКА ОСНОВНОГО СКРИПТА
-    async function loadMainScript() {
-        showNotification('⚡ Загрузка Tamp. Cloud...');
-        
-        try {
-            const response = await makeRequest('GET', '/script');
-            
-            // Кэшируем скрипт
-            GM_setValue('tamp_cached_script', {
-                code: response.script,
-                timestamp: Date.now(),
-                version: response.version
-            });
-
-            executeScript(response.script);
-            showNotification('✅ Tamp. Cloud успешно загружен!');
-            
-        } catch (error) {
-            console.error('Failed to load script:', error);
-            showNotification('❌ Ошибка загрузки, пробуем кэш...');
-            loadFromCache();
-        }
-    }
-
-    // 🔧 ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-    function executeScript(code) {
-        const script = document.createElement('script');
-        script.textContent = code;
-        document.head.appendChild(script);
-    }
-
-    function hideAuthInterface() {
-        const overlay = document.getElementById('tamp-auth-overlay');
-        if (overlay) {
-            overlay.style.opacity = '0';
-            overlay.style.transform = 'scale(0.9)';
-            setTimeout(() => {
-                if (overlay.parentNode) {
-                    overlay.parentNode.removeChild(overlay);
-                }
-            }, 300);
-        }
-    }
-
-    function showNotification(message) {
-        // Простое уведомление в консоль
-        console.log('🔔 ' + message);
-    }
-
-    // 🚀 ЗАПУСК СИСТЕМЫ
-    function startLoader() {
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', initialize);
-        } else {
-            initialize();
-        }
-    }
-
-    // ⏰ ОТСЛЕЖИВАНИЕ ВЫХОДА
-    window.addEventListener('beforeunload', function() {
-        if (userHWID) {
-            // Можно отправлять статистику отключения
-            console.log('👋 User leaving, HWID:', userHWID);
-        }
+    // Create user
+    const user = new User({
+      hwid,
+      nickname,
+      key: key.toUpperCase(),
+      role: keyDoc.type,
+      ip,
+      userAgent
     });
 
-    // 🎬 ЗАПУСК ЛОАДЕРА
-    startLoader();
+    // Decrement key uses (except for coder)
+    if (keyDoc.type !== 'coder') {
+      keyDoc.usesLeft -= 1;
+      if (keyDoc.usesLeft <= 0) {
+        keyDoc.isActive = false;
+      }
+    }
 
-})();
+    // Record activation
+    const activation = new Activation({
+      hwid,
+      key: key.toUpperCase(),
+      nickname,
+      role: keyDoc.type,
+      ip,
+      userAgent
+    });
+
+    await Promise.all([user.save(), keyDoc.save(), activation.save()]);
+
+    console.log(`✅ New activation: ${nickname} (${keyDoc.type}) - HWID: ${hwid}`);
+
+    res.json({
+      success: true,
+      role: keyDoc.type,
+      message: `✅ Активация успешна! Добро пожаловать, ${nickname}!`
+    });
+
+  } catch (error) {
+    console.error('Activation error:', error);
+    res.status(500).json({ success: false, message: '❌ Ошибка сервера при активации' });
+  }
+});
+
+// Validation endpoint
+app.post('/api/validate', async (req, res) => {
+  const { hwid, key } = req.body;
+  
+  try {
+    const user = await User.findOne({ hwid, key: key.toUpperCase(), isActive: true });
+    if (user) {
+      // Update last seen and usage count
+      user.lastSeen = new Date();
+      user.totalUsage += 1;
+      await user.save();
+      
+      res.json({ 
+        valid: true, 
+        role: user.role,
+        nickname: user.nickname,
+        totalUsage: user.totalUsage
+      });
+    } else {
+      res.json({ valid: false });
+    }
+  } catch (error) {
+    res.status(500).json({ valid: false, error: error.message });
+  }
+});
+
+// Script delivery endpoint
+app.get('/api/script', async (req, res) => {
+  const hwid = req.headers['x-hwid'];
+  const key = req.headers['x-key'];
+  const nickname = req.headers['x-nickname'];
+  
+  try {
+    // Validate user
+    const user = await User.findOne({ hwid, key: key.toUpperCase(), isActive: true });
+    if (!user) {
+      return res.status(403).json({ error: 'Access denied. Please activate your account.' });
+    }
+
+    // Read and prepare the main tamp.js script
+    const scriptPath = path.join(__dirname, 'tamp.js');
+    let script = fs.readFileSync(scriptPath, 'utf8');
+    
+    // Replace placeholders with actual user data
+    script = script.replace(/USER_ROLE = cloudData\.role \|\| 'user'/, `USER_ROLE = '${user.role}'`);
+    script = script.replace(/USER_NAME = cloudData\.nickname \|\| 'Player'/, `USER_NAME = '${user.nickname}'`);
+    script = script.replace(/USER_HWID = cloudData\.hwid/, `USER_HWID = '${user.hwid}'`);
+
+    // Update usage stats
+    user.totalUsage += 1;
+    user.lastSeen = new Date();
+    await user.save();
+
+    res.setHeader('Content-Type', 'application/javascript');
+    res.setHeader('X-Script-Version', '6.0.0');
+    res.setHeader('X-User-Role', user.role);
+    
+    res.send(script);
+
+  } catch (error) {
+    console.error('Script delivery error:', error);
+    res.status(500).json({ error: 'Failed to load script' });
+  }
+});
+
+// Admin endpoints
+app.get('/api/admin/keys', async (req, res) => {
+  const auth = req.headers['authorization'];
+  if (!auth || !auth.includes('Bearer fixpro648_admin')) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const keys = await Key.find().sort({ createdAt: -1 });
+    const stats = {
+      total: keys.length,
+      active: keys.filter(k => k.isActive).length,
+      used: keys.filter(k => k.usesLeft === 0).length
+    };
+    
+    res.json({ keys, stats });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/admin/keys', async (req, res) => {
+  const auth = req.headers['authorization'];
+  if (!auth || !auth.includes('Bearer fixpro648_admin')) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const { type, count = 1, maxUses = 1, note } = req.body;
+  
+  try {
+    const newKeys = [];
+    for (let i = 0; i < count; i++) {
+      const key = generateKey(type);
+      const keyDoc = new Key({
+        key,
+        type,
+        maxUses,
+        usesLeft: maxUses,
+        createdBy: 'admin',
+        note
+      });
+      await keyDoc.save();
+      newKeys.push(key);
+    }
+    
+    res.json({ success: true, keys: newKeys });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/admin/users', async (req, res) => {
+  const auth = req.headers['authorization'];
+  if (!auth || !auth.includes('Bearer fixpro648_admin')) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const users = await User.find().sort({ lastSeen: -1 });
+    const activations = await Activation.find().sort({ timestamp: -1 }).limit(50);
+    
+    res.json({ users, recentActivations: activations });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+function generateKey(type) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let result = '';
+  for (let i = 0; i < 12; i++) {
+    if (i > 0 && i % 4 === 0) result += '-';
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return type.toUpperCase() + '-' + result;
+}
+
+// Initialize and start server
+async function startServer() {
+  await initializeKeys();
+  
+  app.listen(PORT, () => {
+    console.log('=================================');
+    console.log('🚀 Tamp. Cloud Server Started');
+    console.log('📍 Port:', PORT);
+    console.log('🌐 Environment:', process.env.NODE_ENV || 'development');
+    console.log('🗄️  Database:', 'MongoDB Atlas');
+    console.log('=================================');
+  });
+}
+
+startServer();
+
+module.exports = app;
