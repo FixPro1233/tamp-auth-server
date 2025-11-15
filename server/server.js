@@ -10,6 +10,7 @@ const app = express();
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
+app.use(express.static('public')); // Для статических файлов
 
 // Rate limiting
 const limiter = rateLimit({
@@ -170,53 +171,8 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-// 🎨 BEAUTIFUL WEB INTERFACE
-app.get('/admin', (req, res) => {
-  const adminKey = req.query.admin_key;
-  
-  if (!adminKey || adminKey !== ADMIN_KEY) {
-    return res.status(403).send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Access Denied</title>
-        <style>
-          body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            margin: 0; padding: 0; height: 100vh;
-            display: flex; align-items: center; justify-content: center;
-          }
-          .container { 
-            background: rgba(255,255,255,0.95); 
-            padding: 40px; 
-            border-radius: 15px;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-            text-align: center;
-            max-width: 400px;
-          }
-          h1 { color: #e74c3c; margin-bottom: 20px; }
-          .btn { 
-            background: linear-gradient(135deg, #667eea, #764ba2);
-            color: white; padding: 12px 30px;
-            border: none; border-radius: 25px;
-            text-decoration: none; display: inline-block;
-            margin-top: 20px; font-weight: bold;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <h1>🔐 Access Denied</h1>
-          <p>Invalid or missing admin key</p>
-          <a href="/admin?admin_key=FIXPRO_ADMIN_2024" class="btn">Try Again</a>
-        </div>
-      </body>
-      </html>
-    `);
-  }
-
-  const html = `
+// 🎨 BEAUTIFUL WEB INTERFACE - ОТДЕЛЬНЫЙ HTML ФАЙЛ
+const adminHTML = `
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -612,6 +568,27 @@ app.get('/admin', (req, res) => {
             font-size: 0.9em;
             font-weight: bold;
         }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.8);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-content {
+            background: #2c3e50;
+            padding: 30px;
+            border-radius: 15px;
+            max-width: 400px;
+            width: 90%;
+        }
     </style>
 </head>
 <body>
@@ -702,8 +679,8 @@ app.get('/admin', (req, res) => {
     <div class="notification" id="notification"></div>
 
     <!-- Generate Keys Modal -->
-    <div id="generateModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; align-items: center; justify-content: center;">
-        <div style="background: #2c3e50; padding: 30px; border-radius: 15px; max-width: 400px; width: 90%;">
+    <div id="generateModal" class="modal">
+        <div class="modal-content">
             <h3 style="color: var(--secondary); margin-bottom: 20px;"><i class="fas fa-plus"></i> Generate New Keys</h3>
             <div style="margin-bottom: 20px;">
                 <label style="display: block; margin-bottom: 8px; color: var(--light);">Key Type:</label>
@@ -733,32 +710,45 @@ app.get('/admin', (req, res) => {
 
         // Load initial data
         document.addEventListener('DOMContentLoaded', function() {
+            console.log('DOM loaded, initializing...');
             loadStatistics();
             loadAllKeys();
-            loadUsers();
         });
 
         async function fetchWithAuth(url) {
-            const response = await fetch(url, {
-                headers: {
-                    'x-admin-key': ADMIN_KEY
+            try {
+                console.log('Fetching:', url);
+                const response = await fetch(url, {
+                    headers: {
+                        'x-admin-key': ADMIN_KEY
+                    }
+                });
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
                 }
-            });
-            return await response.json();
+                return await response.json();
+            } catch (error) {
+                console.error('Fetch error:', error);
+                showNotification('Error fetching data: ' + error.message, 'error');
+                throw error;
+            }
         }
 
         async function loadStatistics() {
             try {
+                console.log('Loading statistics...');
                 const data = await fetchWithAuth('/api/admin/keys');
                 updateStatistics(data.statistics);
                 updateChart(data.statistics);
             } catch (error) {
-                showNotification('Error loading statistics', 'error');
+                console.error('Error loading statistics:', error);
             }
         }
 
         function updateStatistics(stats) {
             const statsGrid = document.getElementById('statsGrid');
+            if (!statsGrid) return;
+            
             statsGrid.innerHTML = \`
                 <div class="stat-card premium">
                     <i class="fas fa-crown fa-2x"></i>
@@ -794,11 +784,15 @@ app.get('/admin', (req, res) => {
         }
 
         function updateChart(stats) {
-            const ctx = document.getElementById('keysChart').getContext('2d');
-            if (window.keysChart) {
-                window.keysChart.destroy();
+            const ctx = document.getElementById('keysChart');
+            if (!ctx) return;
+            
+            const existingChart = Chart.getChart(ctx);
+            if (existingChart) {
+                existingChart.destroy();
             }
-            window.keysChart = new Chart(ctx, {
+            
+            new Chart(ctx, {
                 type: 'doughnut',
                 data: {
                     labels: ['Available', 'Used'],
@@ -816,18 +810,14 @@ app.get('/admin', (req, res) => {
                             position: 'bottom',
                             labels: {
                                 color: '#ecf0f1',
-                                font: {
-                                    size: 12
-                                }
+                                font: { size: 12 }
                             }
                         },
                         title: {
                             display: true,
                             text: 'Key Usage Distribution',
                             color: '#ecf0f1',
-                            font: {
-                                size: 16
-                            }
+                            font: { size: 16 }
                         }
                     }
                 }
@@ -836,43 +826,47 @@ app.get('/admin', (req, res) => {
 
         async function loadAllKeys() {
             try {
+                console.log('Loading all keys...');
                 const data = await fetchWithAuth('/api/admin/keys');
                 allKeys = data.keys;
                 renderKeys();
                 showNotification('Data refreshed successfully');
             } catch (error) {
-                showNotification('Error loading keys', 'error');
+                console.error('Error loading keys:', error);
             }
         }
 
         async function loadAvailableKeys() {
             try {
+                console.log('Loading available keys...');
                 const data = await fetchWithAuth('/api/admin/keys/available');
                 renderAvailableKeys(data.availableKeys);
                 showNotification('Available keys loaded');
             } catch (error) {
-                showNotification('Error loading available keys', 'error');
+                console.error('Error loading available keys:', error);
             }
         }
 
         async function loadUsedKeys() {
             try {
+                console.log('Loading used keys...');
                 const data = await fetchWithAuth('/api/admin/keys/used');
                 renderUsedKeys(data.usedKeys);
                 showNotification('Used keys loaded');
             } catch (error) {
-                showNotification('Error loading used keys', 'error');
+                console.error('Error loading used keys:', error);
             }
         }
 
         async function loadUsers() {
             try {
+                console.log('Loading users...');
                 const data = await fetchWithAuth('/api/admin/users');
                 renderUsers(data.users);
                 document.getElementById('usersSection').style.display = 'block';
                 showNotification('Users loaded');
             } catch (error) {
-                showNotification('Error loading users', 'error');
+                console.error('Error loading users:', error);
             }
         }
 
@@ -883,9 +877,9 @@ app.get('/admin', (req, res) => {
 
         function renderAvailableKeys(keysData) {
             const container = document.getElementById('availableKeys');
+            if (!container) return;
+            
             let availableKeys = [];
-
-            // Flatten all key types
             Object.values(keysData).forEach(keys => {
                 keys.filter(k => k.isActive).forEach(k => availableKeys.push(k));
             });
@@ -924,9 +918,9 @@ app.get('/admin', (req, res) => {
 
         function renderUsedKeys(keysData) {
             const container = document.getElementById('usedKeys');
+            if (!container) return;
+            
             let usedKeys = [];
-
-            // Flatten all key types
             Object.values(keysData).forEach(keys => {
                 keys.filter(k => !k.isActive).forEach(k => usedKeys.push(k));
             });
@@ -971,6 +965,7 @@ app.get('/admin', (req, res) => {
         function renderUsers(users) {
             const container = document.getElementById('usersList');
             const section = document.getElementById('usersSection');
+            if (!container || !section) return;
             
             section.style.display = 'block';
             document.getElementById('usersCount').textContent = users.length;
@@ -991,7 +986,7 @@ app.get('/admin', (req, res) => {
                         <h4>\${user.nickname}</h4>
                         <div class="user-meta">
                             <span class="key-type type-\${user.role}">\${user.role}</span>
-                            <span>• HWID: \${user.hwid.substring(0, 10)}...</span>
+                            <span>• HWID: \${user.hwid?.substring(0, 10)}...</span>
                             <span>• Activated: \${new Date(user.activatedAt).toLocaleDateString()}</span>
                             <span>• Usage: \${user.totalUsage} times</span>
                         </div>
@@ -1006,6 +1001,7 @@ app.get('/admin', (req, res) => {
         }
 
         function showTab(tab) {
+            console.log('Showing tab:', tab);
             currentTab = tab;
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             event.target.classList.add('active');
@@ -1013,10 +1009,11 @@ app.get('/admin', (req, res) => {
         }
 
         function filterKeys(searchTerm) {
+            console.log('Filtering keys with:', searchTerm);
             const items = document.querySelectorAll('.key-item');
             items.forEach(item => {
                 const keyText = item.querySelector('.key-code').textContent.toLowerCase();
-                const keyType = item.classList[1]; // premium, beta, etc.
+                const keyType = item.classList[1];
                 
                 const matchesSearch = !searchTerm || keyText.includes(searchTerm.toLowerCase());
                 const matchesTab = currentTab === 'all' || keyType === currentTab;
@@ -1026,8 +1023,12 @@ app.get('/admin', (req, res) => {
         }
 
         function copyKey(key) {
+            console.log('Copying key:', key);
             navigator.clipboard.writeText(key).then(() => {
                 showNotification('Key copied to clipboard: ' + key);
+            }).catch(err => {
+                console.error('Copy failed:', err);
+                showNotification('Copy failed', 'error');
             });
         }
 
@@ -1037,6 +1038,7 @@ app.get('/admin', (req, res) => {
             }
 
             try {
+                console.log('Resetting key:', key);
                 const response = await fetch('/api/admin/keys/reset', {
                     method: 'POST',
                     headers: {
@@ -1056,23 +1058,25 @@ app.get('/admin', (req, res) => {
                     showNotification('Error resetting key: ' + data.message, 'error');
                 }
             } catch (error) {
+                console.error('Error resetting key:', error);
                 showNotification('Error resetting key', 'error');
             }
         }
 
-        async function deactivateUser(hwid) {
+        function deactivateUser(hwid) {
             if (!confirm('Are you sure you want to deactivate this user?')) {
                 return;
             }
-
             showNotification('User deactivation feature coming soon...', 'error');
         }
 
         function showGenerateModal() {
+            console.log('Showing generate modal');
             document.getElementById('generateModal').style.display = 'flex';
         }
 
         function closeGenerateModal() {
+            console.log('Closing generate modal');
             document.getElementById('generateModal').style.display = 'none';
         }
 
@@ -1081,6 +1085,7 @@ app.get('/admin', (req, res) => {
             const count = parseInt(document.getElementById('keyCount').value);
 
             try {
+                console.log('Generating keys:', type, count);
                 const response = await fetch('/api/admin/keys/generate', {
                     method: 'POST',
                     headers: {
@@ -1101,12 +1106,16 @@ app.get('/admin', (req, res) => {
                     showNotification('Error generating keys: ' + data.error, 'error');
                 }
             } catch (error) {
+                console.error('Error generating keys:', error);
                 showNotification('Error generating keys', 'error');
             }
         }
 
         function showNotification(message, type = 'success') {
+            console.log('Showing notification:', message, type);
             const notification = document.getElementById('notification');
+            if (!notification) return;
+            
             notification.textContent = message;
             notification.className = 'notification ' + (type === 'error' ? 'error' : '') + ' show';
             
@@ -1114,12 +1123,64 @@ app.get('/admin', (req, res) => {
                 notification.classList.remove('show');
             }, 3000);
         }
+
+        // Global error handler
+        window.addEventListener('error', function(e) {
+            console.error('Global error:', e.error);
+            showNotification('JavaScript error occurred, check console', 'error');
+        });
     </script>
 </body>
 </html>
-  `;
+`;
+
+// 🎨 WEB INTERFACE ENDPOINT
+app.get('/admin', (req, res) => {
+  const adminKey = req.query.admin_key;
   
-  res.send(html);
+  if (!adminKey || adminKey !== ADMIN_KEY) {
+    return res.status(403).send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Access Denied</title>
+        <style>
+          body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            margin: 0; padding: 0; height: 100vh;
+            display: flex; align-items: center; justify-content: center;
+          }
+          .container { 
+            background: rgba(255,255,255,0.95); 
+            padding: 40px; 
+            border-radius: 15px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            text-align: center;
+            max-width: 400px;
+          }
+          h1 { color: #e74c3c; margin-bottom: 20px; }
+          .btn { 
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white; padding: 12px 30px;
+            border: none; border-radius: 25px;
+            text-decoration: none; display: inline-block;
+            margin-top: 20px; font-weight: bold;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>🔐 Access Denied</h1>
+          <p>Invalid or missing admin key</p>
+          <a href="/admin?admin_key=FIXPRO_ADMIN_2024" class="btn">Try Again</a>
+        </div>
+      </body>
+      </html>
+    `);
+  }
+
+  res.send(adminHTML.replace(/\${ADMIN_KEY}/g, ADMIN_KEY));
 });
 
 // 📊 HEALTH CHECK ENDPOINT
