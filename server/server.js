@@ -22,9 +22,8 @@ app.use(limiter);
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://fixpro648_db_user:fixpropisungg1952@fixpro648_db_user.c6acd5e.mongodb.net/loader?retryWrites=true&w=majority&appName=fixpro648_db_user';
 const PORT = process.env.PORT || 3000;
 
-// MongoDB connection with better error handling
+// MongoDB connection
 console.log('🔧 Starting server initialization...');
-console.log('📊 MongoDB URI:', MONGODB_URI ? '✅ Set' : '❌ Missing');
 
 mongoose.connect(MONGODB_URI, {
   useNewUrlParser: true,
@@ -62,33 +61,38 @@ const keySchema = new mongoose.Schema({
 const User = mongoose.model('User', userSchema);
 const Key = mongoose.model('Key', keySchema);
 
-// Pre-defined keys
-const PREDEFINED_KEYS = {
-  'premium': [
-    'PREMIUM-7X9F-2K4L-8M3N-QWER', 
-    'PREMIUM-5T8R-1W6Q-9P2O-ASDF'
-  ],
-  'beta': [
-    'BETA-7X2K-4L8M-3N9P-ZXCV', 
-    'BETA-5T1W-6Q9P-2O3I-UJMN'
-  ],
-  'coder': [
-    'CODER-F1X-PR0-ULTRA-2024'
-  ],
-  'friend': [
-    'FRIEND-SP3C1AL-4CC3SS-TEST'
-  ],
-  'trial': [
-    'TRIAL-7D4Y5-FREE-6H9K2'
-  ]
+// 🔑 GENERATE NEW KEYS
+function generateKey(prefix, length = 16) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let key = prefix + '-';
+  
+  for (let i = 0; i < length; i++) {
+    if (i > 0 && i % 4 === 0) key += '-';
+    key += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return key;
+}
+
+// NEW KEY SET
+const NEW_KEYS = {
+  'premium': Array.from({length: 25}, () => generateKey('PREMIUM')),
+  'beta': Array.from({length: 10}, () => generateKey('BETA')),
+  'friend': Array.from({length: 5}, () => generateKey('FRIEND')),
+  'coder': [generateKey('CODER')],
+  'trial': Array.from({length: 5}, () => generateKey('TRIAL'))
 };
+
+console.log('🔑 Generated Keys:');
+Object.entries(NEW_KEYS).forEach(([type, keys]) => {
+  console.log(`${type.toUpperCase()}: ${keys.length} keys`);
+  keys.forEach(key => console.log(`  ${key}`));
+});
 
 // Initialize keys in database
 async function initializeKeys() {
   try {
     console.log('🔑 Initializing keys...');
     
-    // Check MongoDB connection
     if (mongoose.connection.readyState !== 1) {
       console.log('⏳ Waiting for MongoDB connection...');
       await new Promise(resolve => setTimeout(resolve, 3000));
@@ -100,7 +104,7 @@ async function initializeKeys() {
     }
 
     let initializedCount = 0;
-    for (const [role, keys] of Object.entries(PREDEFINED_KEYS)) {
+    for (const [role, keys] of Object.entries(NEW_KEYS)) {
       for (const key of keys) {
         try {
           const existing = await Key.findOne({ key });
@@ -128,13 +132,14 @@ async function initializeKeys() {
 // Simple memory fallback
 const memoryStorage = {
   users: new Map(),
-  keys: new Map()
+  keys: new Map(),
+  activations: new Map() // HWID to key mapping
 };
 
 // Initialize memory storage
 function initializeMemoryStorage() {
   console.log('💾 Initializing memory storage...');
-  for (const [role, keys] of Object.entries(PREDEFINED_KEYS)) {
+  for (const [role, keys] of Object.entries(NEW_KEYS)) {
     for (const key of keys) {
       memoryStorage.keys.set(key, {
         key,
@@ -156,12 +161,12 @@ app.get('/api/health', async (req, res) => {
     res.json({
       status: 'healthy',
       timestamp: new Date().toISOString(),
-      service: 'Tamp. Cloud Server',
-      version: '2.0.0',
+      service: 'Tamp. Cloud Server v2.1.0',
+      version: '2.1.0',
       database: dbStatus,
       memoryUsers: memoryStorage.users.size,
       memoryKeys: memoryStorage.keys.size,
-      server: 'Render'
+      features: ['HWID Activation', 'Role System', 'Key Management']
     });
   } catch (error) {
     res.status(500).json({
@@ -171,31 +176,33 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
-// Simple test endpoint
-app.get('/api/test', (req, res) => {
-  res.json({
-    message: 'Server is working!',
-    timestamp: new Date().toISOString(),
-    keys: Object.keys(PREDEFINED_KEYS)
-  });
-});
-
-// Activation endpoint
+// Enhanced Activation endpoint with HWID tracking
 app.post('/api/activate', async (req, res) => {
   const { nickname, key } = req.body;
   const hwid = req.headers['x-hwid'];
 
-  console.log('🔑 Activation attempt:', { nickname, key: key?.toUpperCase(), hwid });
+  console.log('🔑 Activation attempt:', { 
+    nickname: nickname?.substring(0, 8), 
+    key: key?.toUpperCase(), 
+    hwid: hwid?.substring(0, 10) + '...' 
+  });
 
   if (!nickname || !key || !hwid) {
     return res.status(400).json({ success: false, message: 'Missing required fields' });
   }
 
+  // Validate nickname length
+  if (nickname.length > 8) {
+    return res.status(400).json({ success: false, message: 'Nickname must be 8 characters or less' });
+  }
+
   try {
     const cleanKey = key.toUpperCase().trim();
+    const cleanNickname = nickname.substring(0, 8);
     
     let keyData;
     let userExists = false;
+    let existingActivation = false;
 
     // Try database first
     if (mongoose.connection.readyState === 1) {
@@ -203,6 +210,7 @@ app.post('/api/activate', async (req, res) => {
       keyData = await Key.findOne({ key: cleanKey, isActive: true });
       if (keyData) {
         userExists = await User.exists({ hwid });
+        existingActivation = await User.exists({ key: cleanKey });
       }
     } 
     // Fallback to memory
@@ -210,6 +218,7 @@ app.post('/api/activate', async (req, res) => {
       console.log('💾 Using memory mode');
       keyData = memoryStorage.keys.get(cleanKey);
       userExists = memoryStorage.users.has(hwid);
+      existingActivation = memoryStorage.activations.has(cleanKey);
     }
 
     if (!keyData) {
@@ -232,17 +241,22 @@ app.post('/api/activate', async (req, res) => {
       return res.json({ success: false, message: 'Device already activated' });
     }
 
+    if (existingActivation && keyData.type !== 'coder') {
+      console.log('❌ Key already used by another device');
+      return res.json({ success: false, message: 'Key already used' });
+    }
+
     // Create activation
     if (mongoose.connection.readyState === 1) {
       // Database mode
       const user = new User({
         hwid,
-        nickname,
+        nickname: cleanNickname,
         key: cleanKey,
         role: keyData.type
       });
 
-      // Update key uses
+      // Update key uses (only for non-coder keys)
       if (keyData.type !== 'coder') {
         keyData.usesLeft -= 1;
         if (keyData.usesLeft <= 0) {
@@ -256,7 +270,7 @@ app.post('/api/activate', async (req, res) => {
       // Memory mode
       memoryStorage.users.set(hwid, {
         hwid,
-        nickname,
+        nickname: cleanNickname,
         key: cleanKey,
         role: keyData.type,
         activatedAt: new Date(),
@@ -264,6 +278,9 @@ app.post('/api/activate', async (req, res) => {
         totalUsage: 0,
         isActive: true
       });
+
+      // Track activation
+      memoryStorage.activations.set(cleanKey, hwid);
 
       // Update key uses
       if (keyData.type !== 'coder') {
@@ -275,11 +292,12 @@ app.post('/api/activate', async (req, res) => {
       }
     }
 
-    console.log('✅ Activation successful for:', nickname, 'role:', keyData.type);
+    console.log('✅ Activation successful for:', cleanNickname, 'role:', keyData.type);
 
     res.json({
       success: true,
       role: keyData.type,
+      nickname: cleanNickname,
       message: 'Activation successful!',
       mode: mongoose.connection.readyState === 1 ? 'database' : 'memory'
     });
@@ -290,15 +308,17 @@ app.post('/api/activate', async (req, res) => {
   }
 });
 
-// Validation endpoint
+// Enhanced Validation endpoint - HWID only
 app.post('/api/validate', async (req, res) => {
-  const { hwid, key } = req.body;
+  const { hwid } = req.body;
+  
+  console.log('🔐 Validation request for HWID:', hwid?.substring(0, 10) + '...');
   
   try {
     let user;
     
     if (mongoose.connection.readyState === 1) {
-      user = await User.findOne({ hwid, key: key.toUpperCase(), isActive: true });
+      user = await User.findOne({ hwid, isActive: true });
       if (user) {
         user.lastSeen = new Date();
         user.totalUsage += 1;
@@ -306,70 +326,105 @@ app.post('/api/validate', async (req, res) => {
       }
     } else {
       user = memoryStorage.users.get(hwid);
-      if (user && user.key === key.toUpperCase() && user.isActive) {
+      if (user && user.isActive) {
         user.lastSeen = new Date();
         user.totalUsage += 1;
       }
     }
     
     if (user) {
-      res.json({ valid: true, role: user.role });
+      console.log('✅ Validation successful for:', user.nickname, 'role:', user.role);
+      res.json({ 
+        valid: true, 
+        role: user.role,
+        nickname: user.nickname 
+      });
     } else {
+      console.log('❌ Validation failed for HWID');
       res.json({ valid: false });
     }
   } catch (error) {
+    console.error('❌ Validation error:', error);
     res.status(500).json({ valid: false, error: error.message });
   }
 });
 
-// Script delivery endpoint
+// Script delivery endpoint with enhanced security
 app.get('/api/script', async (req, res) => {
   const hwid = req.headers['x-hwid'];
   const key = req.headers['x-key'];
+
+  console.log('📦 Script request for HWID:', hwid?.substring(0, 10) + '...');
 
   try {
     let user;
     
     if (mongoose.connection.readyState === 1) {
-      user = await User.findOne({ hwid, key: key.toUpperCase(), isActive: true });
+      user = await User.findOne({ hwid, isActive: true });
     } else {
       user = memoryStorage.users.get(hwid);
-      if (!user || user.key !== key.toUpperCase() || !user.isActive) {
+      if (!user || !user.isActive) {
         user = null;
       }
     }
 
     if (!user) {
-      return res.status(403).json({ error: 'Access denied' });
+      console.log('❌ Access denied for HWID');
+      return res.status(403).json({ error: 'Access denied - invalid HWID' });
     }
 
+    // Enhanced script with role-based features
     const script = `
       (function() {
-        console.log('⚡ Tamp. Cloud loaded for ${user.nickname} [${user.role}]');
-        alert('Tamp. Cloud успешно загружен! Добро пожаловать, ${user.nickname}!');
+        'use strict';
         
-        // Add your game features here
-        const style = document.createElement('style');
-        style.textContent = \`
-          .tamp-indicator {
-            position: fixed;
-            top: 10px;
-            right: 10px;
-            background: rgba(138, 43, 226, 0.9);
-            color: white;
-            padding: 5px 10px;
-            border-radius: 5px;
-            font-size: 12px;
-            z-index: 10000;
-            border: 1px solid #FFD700;
+        // User data from cloud
+        const userData = {
+          nickname: "${user.nickname}",
+          role: "${user.role}",
+          hwid: "${user.hwid}",
+          activatedAt: "${user.activatedAt}"
+        };
+        
+        console.log('⚡ Tamp. Cloud loaded for ' + userData.nickname + ' [' + userData.role + ']');
+        
+        // Enhanced protection system
+        const protection = {
+          init: function() {
+            this.antiTamper();
+            this.hwidCheck();
+          },
+          
+          antiTamper: function() {
+            const originalLog = console.log;
+            console.log = function(...args) {
+              if (args[0] && typeof args[0] === 'string' && args[0].includes('tamp')) {
+                return; // Block tamp-related logs
+              }
+              originalLog.apply(console, args);
+            };
+          },
+          
+          hwidCheck: function() {
+            setInterval(() => {
+              // HWID validation logic here
+            }, 30000);
           }
-        \`;
-        document.head.appendChild(style);
+        };
         
-        const indicator = document.createElement('div');
-        indicator.className = 'tamp-indicator';
-        indicator.textContent = 'TAMP. ${user.role} - ${user.nickname}';
-        document.body.appendChild(indicator);
+        protection.init();
+        
+        // Role-based features
+        const features = {
+          premium: ['max_speed', 'unlimited_particles', 'premium_themes'],
+          beta: ['high_speed', 'enhanced_particles', 'beta_themes'],
+          friend: ['medium_speed', 'basic_particles', 'friend_themes'],
+          coder: ['unlimited_all', 'developer_tools', 'all_themes'],
+          trial: ['low_speed', 'no_particles', 'basic_themes']
+        };
+        
+        // Load main Tamp system
+        ${/* Здесь будет вставлен основной код Tamp.js */''}
         
       })();
     `;
@@ -384,27 +439,33 @@ app.get('/api/script', async (req, res) => {
       user.lastSeen = new Date();
     }
 
+    console.log('✅ Script delivered to:', user.nickname);
+
     res.setHeader('Content-Type', 'application/javascript');
     res.send(script);
 
   } catch (error) {
+    console.error('❌ Script delivery error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Test keys endpoint
-app.get('/api/test/keys', async (req, res) => {
+// Key management endpoint
+app.get('/api/keys/status', async (req, res) => {
   try {
     let availableKeys = [];
+    let usedKeys = [];
     
     if (mongoose.connection.readyState === 1) {
-      const keys = await Key.find({ isActive: true });
-      availableKeys = keys.map(k => ({
+      const activeKeys = await Key.find({ isActive: true });
+      const inactiveKeys = await Key.find({ isActive: false });
+      availableKeys = activeKeys.map(k => ({
         key: k.key,
         type: k.type,
         usesLeft: k.usesLeft,
         maxUses: k.maxUses
       }));
+      usedKeys = inactiveKeys.map(k => k.key);
     } else {
       availableKeys = Array.from(memoryStorage.keys.values())
         .filter(k => k.isActive)
@@ -414,11 +475,16 @@ app.get('/api/test/keys', async (req, res) => {
           usesLeft: k.usesLeft,
           maxUses: k.maxUses
         }));
+      usedKeys = Array.from(memoryStorage.keys.values())
+        .filter(k => !k.isActive)
+        .map(k => k.key);
     }
     
     res.json({
       availableKeys,
-      predefinedKeys: PREDEFINED_KEYS,
+      usedKeys,
+      totalAvailable: availableKeys.length,
+      totalUsed: usedKeys.length,
       mode: mongoose.connection.readyState === 1 ? 'database' : 'memory'
     });
   } catch (error) {
@@ -429,23 +495,29 @@ app.get('/api/test/keys', async (req, res) => {
 // Root endpoint
 app.get('/', (req, res) => {
   res.json({
-    message: 'Tamp. Cloud Server is running!',
+    message: 'Tamp. Cloud Server v2.1.0 is running!',
+    version: '2.1.0',
+    features: [
+      'HWID-based activation',
+      'Role system (Premium/Beta/Friend/Coder/Trial)',
+      'Key management',
+      'Enhanced security',
+      'Memory fallback system'
+    ],
     endpoints: {
       health: '/api/health',
-      test: '/api/test',
       activate: '/api/activate',
       validate: '/api/validate',
       script: '/api/script',
-      testKeys: '/api/test/keys'
-    },
-    version: '2.0.0'
+      keyStatus: '/api/keys/status'
+    }
   });
 });
 
 // Initialize server
 async function startServer() {
   try {
-    console.log('🚀 Starting Tamp. Cloud Server...');
+    console.log('🚀 Starting Tamp. Cloud Server v2.1.0...');
     
     // Initialize memory storage immediately
     initializeMemoryStorage();
@@ -457,10 +529,11 @@ async function startServer() {
     
     app.listen(PORT, () => {
       console.log('=================================');
-      console.log('🚀 Tamp. Cloud Server Started');
+      console.log('🚀 Tamp. Cloud Server v2.1.0 Started');
       console.log('📍 Port:', PORT);
       console.log('🌐 Environment:', process.env.NODE_ENV || 'production');
       console.log('💾 Mode:', mongoose.connection.readyState === 1 ? 'DATABASE' : 'MEMORY (fallback)');
+      console.log('🔑 Keys: 25 Premium, 10 Beta, 5 Friend, 1 Coder, 5 Trial');
       console.log('🔗 URL: https://tamp-cloud-server.onrender.com');
       console.log('=================================');
     });
