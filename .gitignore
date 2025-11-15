@@ -1,0 +1,10 @@
+node_modules/
+.env
+.DS_Store
+*.log
+.nyc_output
+coverage/
+.npm
+.pnpm/
+yarn.lock
+package-lock.json
