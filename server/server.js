@@ -70,12 +70,25 @@ const keySchema = new mongoose.Schema({
 const User = mongoose.model('User', userSchema);
 const Key = mongoose.model('Key', keySchema);
 
-// Pre-defined keys
+// Pre-defined keys - УВЕЛИЧИВАЕМ ДЛИНУ КЛЮЧЕЙ
 const PREDEFINED_KEYS = {
-  'premium': ['PREMIUM-7X9F-2K4L-8M3N', 'PREMIUM-5T8R-1W6Q-9P2O'],
-  'beta': ['BETA-7X2K-4L8M-3N9P', 'BETA-5T1W-6Q9P-2O3I'],
-  'coder': ['CODER-F1X-PR0-ULTRA'],
-  'friend': ['FRIEND-SP3C1AL-4CC3SS']
+  'premium': [
+    'PREMIUM-7X9F-2K4L-8M3N-QWER', 
+    'PREMIUM-5T8R-1W6Q-9P2O-ASDF'
+  ],
+  'beta': [
+    'BETA-7X2K-4L8M-3N9P-ZXCV', 
+    'BETA-5T1W-6Q9P-2O3I-UJMN'
+  ],
+  'coder': [
+    'CODER-F1X-PR0-ULTRA-2024'
+  ],
+  'friend': [
+    'FRIEND-SP3C1AL-4CC3SS-TEST'
+  ],
+  'trial': [
+    'TRIAL-7D4Y5-FREE-6H9K2'
+  ]
 };
 
 // Initialize keys in database
@@ -108,8 +121,9 @@ async function checkKeysInDatabase() {
     console.log(`📊 Total keys in database: ${keysCount}`);
     
     const keys = await Key.find({});
+    console.log('🔑 Available keys:');
     keys.forEach(k => {
-      console.log(`🔑 Key: ${k.key}, Type: ${k.type}, Active: ${k.isActive}, Uses: ${k.usesLeft}/${k.maxUses}`);
+      console.log(`   - ${k.key} [${k.type}] - Uses: ${k.usesLeft}/${k.maxUses} - Active: ${k.isActive}`);
     });
   } catch (error) {
     console.error('Error checking keys:', error);
@@ -126,7 +140,11 @@ app.get('/api/health', async (req, res) => {
       status: 'healthy',
       timestamp: new Date().toISOString(),
       service: 'Tamp. Cloud Server',
-      version: '1.0.0'
+      version: '1.0.0',
+      keys: Object.keys(PREDEFINED_KEYS).reduce((acc, role) => {
+        acc[role] = PREDEFINED_KEYS[role].length;
+        return acc;
+      }, {})
     });
   } catch (error) {
     res.status(500).json({
@@ -136,12 +154,12 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
-// Activation endpoint
+// Activation endpoint with improved logging
 app.post('/api/activate', async (req, res) => {
   const { nickname, key } = req.body;
   const hwid = req.headers['x-hwid'];
 
-  console.log('🔑 Activation attempt:', { nickname, key, hwid });
+  console.log('🔑 Activation attempt:', { nickname, key: key?.toUpperCase(), hwid });
 
   if (!nickname || !key || !hwid) {
     return res.status(400).json({ success: false, message: 'Missing required fields' });
@@ -155,12 +173,23 @@ app.post('/api/activate', async (req, res) => {
     
     if (!keyDoc) {
       console.log('❌ Key not found or inactive:', cleanKey);
-      const allKeys = await Key.find({});
-      console.log('📋 Available keys:', allKeys.map(k => ({ key: k.key, active: k.isActive })));
+      
+      // Try to find similar keys for debugging
+      const similarKeys = await Key.find({
+        key: { $regex: cleanKey.replace(/-/g, '').substring(0, 8), $options: 'i' }
+      });
+      
+      console.log('🔎 Similar keys found:', similarKeys.map(k => k.key));
+      
       return res.json({ success: false, message: 'Invalid activation key' });
     }
 
-    console.log('✅ Key found:', { key: keyDoc.key, type: keyDoc.type, usesLeft: keyDoc.usesLeft });
+    console.log('✅ Key found:', { 
+      key: keyDoc.key, 
+      type: keyDoc.type, 
+      usesLeft: keyDoc.usesLeft,
+      maxUses: keyDoc.maxUses 
+    });
 
     if (keyDoc.usesLeft <= 0) {
       console.log('❌ Key has no uses left');
@@ -184,7 +213,10 @@ app.post('/api/activate', async (req, res) => {
     // Update key uses
     if (keyDoc.type !== 'coder') {
       keyDoc.usesLeft -= 1;
-      if (keyDoc.usesLeft <= 0) keyDoc.isActive = false;
+      if (keyDoc.usesLeft <= 0) {
+        keyDoc.isActive = false;
+        console.log('🔐 Key deactivated:', cleanKey);
+      }
     }
 
     await Promise.all([user.save(), keyDoc.save()]);
@@ -233,13 +265,44 @@ app.get('/api/script', async (req, res) => {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    // Basic script for testing
-    const script = `
-      (function() {
-        console.log('⚡ Tamp. Cloud loaded for ${user.nickname} [${user.role}]');
-        alert('Tamp. Cloud успешно загружен! Добро пожаловать, ${user.nickname}!');
-      })();
-    `;
+    // Enhanced script based on user role
+    let script = '';
+    switch (user.role) {
+      case 'premium':
+        script = `
+          (function() {
+            console.log('⚡ Tamp. Cloud PREMIUM loaded for ${user.nickname}');
+            alert('Tamp. Cloud PREMIUM успешно загружен! Добро пожаловать, ${user.nickname}!');
+            // Premium features here
+          })();
+        `;
+        break;
+      case 'beta':
+        script = `
+          (function() {
+            console.log('⚡ Tamp. Cloud BETA loaded for ${user.nickname}');
+            alert('Tamp. Cloud BETA успешно загружен! Добро пожаловать, ${user.nickname}!');
+            // Beta features here
+          })();
+        `;
+        break;
+      case 'coder':
+        script = `
+          (function() {
+            console.log('⚡ Tamp. Cloud CODER loaded for ${user.nickname}');
+            alert('Tamp. Cloud CODER успешно загружен! Добро пожаловать, ${user.nickname}!');
+            // Coder features here
+          })();
+        `;
+        break;
+      default:
+        script = `
+          (function() {
+            console.log('⚡ Tamp. Cloud loaded for ${user.nickname} [${user.role}]');
+            alert('Tamp. Cloud успешно загружен! Добро пожаловать, ${user.nickname}!');
+          })();
+        `;
+    }
 
     user.totalUsage += 1;
     user.lastSeen = new Date();
@@ -263,6 +326,26 @@ app.get('/api/admin/keys', async (req, res) => {
   try {
     const keys = await Key.find().sort({ createdAt: -1 });
     res.json({ keys });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Test endpoint to verify keys
+app.get('/api/test/keys', async (req, res) => {
+  try {
+    const keys = await Key.find({ isActive: true });
+    const availableKeys = keys.map(k => ({
+      key: k.key,
+      type: k.type,
+      usesLeft: k.usesLeft,
+      maxUses: k.maxUses
+    }));
+    
+    res.json({
+      availableKeys,
+      predefinedKeys: PREDEFINED_KEYS
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
