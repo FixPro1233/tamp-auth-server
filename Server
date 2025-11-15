@@ -1,6 +1,0 @@
-git init
-git add .
-git commit -m "Initial commit: Tamp. Auth Server"
-git branch -M main
-git remote add origin https://github.com/ТВОЙ_USERNAME/tamp-auth-server.git
-git push -u origin main
